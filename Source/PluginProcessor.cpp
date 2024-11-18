@@ -1,190 +1,135 @@
-/*
-  ==============================================================================
-
-    This file contains the basic framework code for a JUCE plugin processor.
-
-  ==============================================================================
-*/
-
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-//==============================================================================
 AutoTuneAudioProcessor::AutoTuneAudioProcessor()
 #ifndef JucePlugin_PreferredChannelConfigurations
-     : AudioProcessor (BusesProperties()
-                     #if ! JucePlugin_IsMidiEffect
-                      #if ! JucePlugin_IsSynth
-                       .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
-                      #endif
-                       .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
-                     #endif
-                       )
+    : AudioProcessor(BusesProperties()
+#if ! JucePlugin_IsMidiEffect
+#if ! JucePlugin_IsSynth
+        .withInput("Input", juce::AudioChannelSet::stereo(), true)
+#endif
+        .withOutput("Output", juce::AudioChannelSet::stereo(), true)
+#endif
+    ), parameters(*this, nullptr, "Parameters",
+        {
+            std::make_unique<juce::AudioParameterFloat>("pitchCorrection", "Pitch Correction", 0.0f, 1.0f, 0.5f),
+            std::make_unique<juce::AudioParameterFloat>("formantShift", "Formant Shift", -12.0f, 12.0f, 0.0f),
+            std::make_unique<juce::AudioParameterFloat>("vibratoDepth", "Vibrato Depth", 0.0f, 10.0f, 0.0f),
+            std::make_unique<juce::AudioParameterFloat>("vibratoRate", "Vibrato Rate", 0.1f, 10.0f, 1.0f)
+        })
 #endif
 {
 }
 
-AutoTuneAudioProcessor::~AutoTuneAudioProcessor()
-{
-}
+AutoTuneAudioProcessor::~AutoTuneAudioProcessor() {}
 
-//==============================================================================
-const juce::String AutoTuneAudioProcessor::getName() const
-{
-    return JucePlugin_Name;
-}
+const juce::String AutoTuneAudioProcessor::getName() const { return JucePlugin_Name; }
+bool AutoTuneAudioProcessor::acceptsMidi() const { return false; }
+bool AutoTuneAudioProcessor::producesMidi() const { return false; }
+bool AutoTuneAudioProcessor::isMidiEffect() const { return false; }
+double AutoTuneAudioProcessor::getTailLengthSeconds() const { return 0.0; }
+int AutoTuneAudioProcessor::getNumPrograms() { return 1; }
+int AutoTuneAudioProcessor::getCurrentProgram() { return 0; }
+void AutoTuneAudioProcessor::setCurrentProgram(int index) {}
+const juce::String AutoTuneAudioProcessor::getProgramName(int index) { return {}; }
+void AutoTuneAudioProcessor::changeProgramName(int index, const juce::String& newName) {}
 
-bool AutoTuneAudioProcessor::acceptsMidi() const
-{
-   #if JucePlugin_WantsMidiInput
-    return true;
-   #else
-    return false;
-   #endif
-}
+void AutoTuneAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {}
+void AutoTuneAudioProcessor::releaseResources() {}
 
-bool AutoTuneAudioProcessor::producesMidi() const
+bool AutoTuneAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
-   #if JucePlugin_ProducesMidiOutput
-    return true;
-   #else
-    return false;
-   #endif
-}
-
-bool AutoTuneAudioProcessor::isMidiEffect() const
-{
-   #if JucePlugin_IsMidiEffect
-    return true;
-   #else
-    return false;
-   #endif
-}
-
-double AutoTuneAudioProcessor::getTailLengthSeconds() const
-{
-    return 0.0;
-}
-
-int AutoTuneAudioProcessor::getNumPrograms()
-{
-    return 1;   // NB: some hosts don't cope very well if you tell them there are 0 programs,
-                // so this should be at least 1, even if you're not really implementing programs.
-}
-
-int AutoTuneAudioProcessor::getCurrentProgram()
-{
-    return 0;
-}
-
-void AutoTuneAudioProcessor::setCurrentProgram (int index)
-{
-}
-
-const juce::String AutoTuneAudioProcessor::getProgramName (int index)
-{
-    return {};
-}
-
-void AutoTuneAudioProcessor::changeProgramName (int index, const juce::String& newName)
-{
-}
-
-//==============================================================================
-void AutoTuneAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
-{
-    // Use this method as the place to do any pre-playback
-    // initialisation that you need..
-}
-
-void AutoTuneAudioProcessor::releaseResources()
-{
-    // When playback stops, you can use this as an opportunity to free up any
-    // spare memory, etc.
-}
-
-#ifndef JucePlugin_PreferredChannelConfigurations
-bool AutoTuneAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
-{
-  #if JucePlugin_IsMidiEffect
-    juce::ignoreUnused (layouts);
-    return true;
-  #else
-    // This is the place where you check if the layout is supported.
-    // In this template code we only support mono or stereo.
-    // Some plugin hosts, such as certain GarageBand versions, will only
-    // load plugins that support stereo bus layouts.
-    if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono()
-     && layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
+    if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono() &&
+        layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
         return false;
-
-    // This checks if the input layout matches the output layout
-   #if ! JucePlugin_IsSynth
-    if (layouts.getMainOutputChannelSet() != layouts.getMainInputChannelSet())
-        return false;
-   #endif
-
     return true;
-  #endif
 }
-#endif
 
-void AutoTuneAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+void AutoTuneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
-    auto totalNumInputChannels  = getTotalNumInputChannels();
+    auto totalNumInputChannels = getTotalNumInputChannels();
     auto totalNumOutputChannels = getTotalNumOutputChannels();
 
-    // In case we have more outputs than inputs, this code clears any output
-    // channels that didn't contain input data, (because these aren't
-    // guaranteed to be empty - they may contain garbage).
-    // This is here to avoid people getting screaming feedback
-    // when they first compile a plugin, but obviously you don't need to keep
-    // this code if your algorithm always overwrites all the output channels.
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
-        buffer.clear (i, 0, buffer.getNumSamples());
+        buffer.clear(i, 0, buffer.getNumSamples());
 
-    // This is the place where you'd normally do the guts of your plugin's
-    // audio processing...
-    // Make sure to reset the state if your inner loop is processing
-    // the samples and the outer loop is handling the channels.
-    // Alternatively, you can process the samples with the channels
-    // interleaved by keeping the same state.
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
     {
-        auto* channelData = buffer.getWritePointer (channel);
-
-        // ..do something to the data...
+        auto* channelData = buffer.getWritePointer(channel);
+        int numSamples = buffer.getNumSamples();
+        // Detect the pitch
+        float detectedPitch = detectPitch(channelData, numSamples, getSampleRate());
+        // Correct the pitch
+        float targetPitch = 440.0f; 
+        float correctedPitch = correctPitch(detectedPitch, targetPitch);
+        // Calculate pitch shift ratio
+        float pitchShiftRatio = detectedPitch > 0 ? correctedPitch / detectedPitch : 1.0f;
+        // Apply pitch shift
+        applyPitchShift(channelData, numSamples, pitchShiftRatio);
     }
 }
-
-//==============================================================================
-bool AutoTuneAudioProcessor::hasEditor() const
+void AutoTuneAudioProcessor::applyPitchShift(float* channelData, int numSamples, float pitchShiftRatio)
 {
-    return true; // (change this to false if you choose to not supply an editor)
+    juce::AudioBuffer<float> resampledBuffer(1, (int)(numSamples / pitchShiftRatio));
+    auto* resampledData = resampledBuffer.getWritePointer(0);
+
+    for (int i = 0; i < resampledBuffer.getNumSamples(); ++i)
+    {
+        float originalIndex = i * pitchShiftRatio;
+        int indexA = (int)originalIndex;
+        int indexB = juce::jmin(indexA + 1, numSamples - 1);
+        float fraction = originalIndex - indexA;
+
+        resampledData[i] = channelData[indexA] * (1.0f - fraction) + channelData[indexB] * fraction;
+    }
+
+    juce::FloatVectorOperations::copy(channelData, resampledData, resampledBuffer.getNumSamples());
 }
+
 
 juce::AudioProcessorEditor* AutoTuneAudioProcessor::createEditor()
 {
-    return new AutoTuneAudioProcessorEditor (*this);
+    return new AutoTuneAudioProcessorEditor(*this);
 }
 
-//==============================================================================
-void AutoTuneAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
+bool AutoTuneAudioProcessor::hasEditor() const { return true; }
+void AutoTuneAudioProcessor::getStateInformation(juce::MemoryBlock& destData) {}
+void AutoTuneAudioProcessor::setStateInformation(const void* data, int sizeInBytes) {}
+
+float AutoTuneAudioProcessor::detectPitch(const float* audioData, int numSamples, double sampleRate)
 {
-    // You should use this method to store your parameters in the memory block.
-    // You could do that either as raw data, or use the XML or ValueTree classes
-    // as intermediaries to make it easy to save and load complex data.
+    const int minLag = sampleRate / 400;
+    const int maxLag = sampleRate / 50;
+    const float threshold = 0.1f;
+
+    std::vector<float> difference(maxLag);
+    std::vector<float> cumulativeDifference(maxLag);
+
+    for (int lag = minLag; lag < maxLag; ++lag)
+    {
+        float sum = 0.0f;
+        for (int i = 0; i < numSamples - lag; ++i)
+            sum += std::pow(audioData[i] - audioData[i + lag], 2);
+        difference[lag] = sum;
+    }
+
+    cumulativeDifference[minLag] = difference[minLag];
+    for (int lag = minLag + 1; lag < maxLag; ++lag)
+        cumulativeDifference[lag] = difference[lag] / ((lag + 1) / (float)lag);
+
+    for (int lag = minLag; lag < maxLag; ++lag)
+        if (cumulativeDifference[lag] < threshold)
+            return sampleRate / lag;
+
+    return 0.0f;
 }
 
-void AutoTuneAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
+float AutoTuneAudioProcessor::correctPitch(float detectedPitch, float targetPitch)
 {
-    // You should use this method to restore your parameters from this memory block,
-    // whose contents will have been created by the getStateInformation() call.
+    return targetPitch;
 }
 
-//==============================================================================
-// This creates new instances of the plugin..
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new AutoTuneAudioProcessor();

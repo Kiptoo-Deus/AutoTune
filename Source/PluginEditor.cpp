@@ -1,40 +1,50 @@
-/*
-  ==============================================================================
-
-    This file contains the basic framework code for a JUCE plugin editor.
-
-  ==============================================================================
-*/
-
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-//==============================================================================
-AutoTuneAudioProcessorEditor::AutoTuneAudioProcessorEditor (AutoTuneAudioProcessor& p)
-    : AudioProcessorEditor (&p), audioProcessor (p)
+AutoTuneAudioProcessorEditor::AutoTuneAudioProcessorEditor(AutoTuneAudioProcessor& p)
+    : AudioProcessorEditor(&p), audioProcessor(p),
+    pitchCorrectionAttachment(p.parameters, "pitchCorrection", pitchCorrectionSlider),
+    formantShiftAttachment(p.parameters, "formantShift", formantShiftSlider),
+    vibratoDepthAttachment(p.parameters, "vibratoDepth", vibratoDepthSlider),
+    vibratoRateAttachment(p.parameters, "vibratoRate", vibratoRateSlider)
 {
-    // Make sure that before the constructor has finished, you've set the
-    // editor's size to whatever you need it to be.
-    setSize (400, 300);
+    addAndMakeVisible(pitchCorrectionSlider);
+    addAndMakeVisible(formantShiftSlider);
+    addAndMakeVisible(vibratoDepthSlider);
+    addAndMakeVisible(vibratoRateSlider);
+
+    addAndMakeVisible(detectedPitchLabel);
+    detectedPitchLabel.setText("Detected Pitch: ", juce::dontSendNotification);
+    detectedPitchLabel.setJustificationType(juce::Justification::centredLeft);
+
+    addAndMakeVisible(targetPitchSlider);
+    targetPitchSlider.setRange(20.0, 2000.0); // Pitch range in Hz
+    targetPitchSlider.setValue(440.0); // Default to A4
+    targetPitchSlider.onValueChange = [this] {
+        audioProcessor.targetPitch = targetPitchSlider.getValue();
+    };
+
+    setSize(400, 300);
 }
 
-AutoTuneAudioProcessorEditor::~AutoTuneAudioProcessorEditor()
-{
-}
+AutoTuneAudioProcessorEditor::~AutoTuneAudioProcessorEditor() {}
 
-//==============================================================================
-void AutoTuneAudioProcessorEditor::paint (juce::Graphics& g)
+void AutoTuneAudioProcessorEditor::paint(juce::Graphics& g)
 {
-    // (Our component is opaque, so we must completely fill the background with a solid colour)
-    g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
-
-    g.setColour (juce::Colours::white);
-    g.setFont (15.0f);
-    g.drawFittedText ("Hello World!", getLocalBounds(), juce::Justification::centred, 1);
+    g.fillAll(juce::Colours::black);
+    g.setColour(juce::Colours::white);
+    g.setFont(15.0f);
+    g.drawFittedText("AutoTune Plugin", getLocalBounds(), juce::Justification::centred, 1);
 }
 
 void AutoTuneAudioProcessorEditor::resized()
 {
-    // This is generally where you'll want to lay out the positions of any
-    // subcomponents in your editor..
+    auto area = getLocalBounds().reduced(10);
+    pitchCorrectionSlider.setBounds(area.removeFromTop(50));
+    formantShiftSlider.setBounds(area.removeFromTop(50));
+    vibratoDepthSlider.setBounds(area.removeFromTop(50));
+    vibratoRateSlider.setBounds(area.removeFromTop(50));
+    detectedPitchLabel.setBounds(10, 10, 150, 20);
+    targetPitchSlider.setBounds(10, 40, 150, 20);
+
 }
