@@ -13,10 +13,13 @@
 AutotuneAudioProcessor::AutotuneAudioProcessor()
     : AudioProcessor(BusesProperties()
         .withInput("Input", juce::AudioChannelSet::stereo(), true)
-        .withOutput("Output", juce::AudioChannelSet::stereo(), true))
+        .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+    outputBuffer(2, bufferSize) // Stereo output buffer
 {
-    std::fill(analysisBuffer, analysisBuffer + bufferSize, 0.0f); // Initialize buffer to zeros
-    currentSampleRate = 0.0; // Will be set in prepareToPlay
+    std::fill(analysisBuffer, analysisBuffer + bufferSize, 0.0f);
+    currentSampleRate = 0.0;
+    previousPitch = 0.0f;
+    outputBuffer.clear();
 }
 
 AutotuneAudioProcessor::~AutotuneAudioProcessor()
@@ -75,7 +78,9 @@ void AutotuneAudioProcessor::changeProgramName(int index, const juce::String& ne
 //==============================================================================
 void AutotuneAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
-    currentSampleRate = sampleRate; // Store sample rate for pitch calculations
+    currentSampleRate = sampleRate;
+    outputBuffer.setSize(2, samplesPerBlock); 
+    outputBuffer.clear();
 }
 
 void AutotuneAudioProcessor::releaseResources()
@@ -101,15 +106,11 @@ void AutotuneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     auto totalNumInputChannels = getTotalNumInputChannels();
     auto totalNumOutputChannels = getTotalNumOutputChannels();
 
-    // Clear unused output channels
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, buffer.getNumSamples());
 
-    // Get left channel data (assuming stereo or mono)
     auto* leftChannelData = buffer.getWritePointer(0);
     int numSamples = buffer.getNumSamples();
-
-    // Copy input to analysis buffer with Hann window
     int samplesToCopy = juce::jmin(numSamples, bufferSize);
     for (int i = 0; i < samplesToCopy; ++i)
     {
@@ -117,12 +118,12 @@ void AutotuneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
         analysisBuffer[i] = leftChannelData[i] * window;
     }
     for (int i = samplesToCopy; i < bufferSize; ++i)
-        analysisBuffer[i] = 0.0f; // Zero-pad if buffer is smaller
+        analysisBuffer[i] = 0.0f;
 
-    // Autocorrelation for pitch detection
+    // Autocorrelation
     float autocorr[bufferSize] = { 0 };
-    const int minPeriod = static_cast<int>(currentSampleRate / 1000.0); // Min freq ~ 20 Hz
-    const int maxPeriod = static_cast<int>(currentSampleRate / 50.0);   // Max freq ~ 1000 Hz
+    const int minPeriod = static_cast<int>(currentSampleRate / 1000.0);
+    const int maxPeriod = static_cast<int>(currentSampleRate / 50.0);
 
     for (int lag = minPeriod; lag < maxPeriod; ++lag)
     {
@@ -132,10 +133,10 @@ void AutotuneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
         }
     }
 
-    // Find peak with threshold and refinement
+    // Find peak
     float maxAutocorr = 0;
     int period = minPeriod;
-    float threshold = 0.1f * autocorr[0]; // Basic energy threshold
+    float threshold = 0.1f * autocorr[0];
     for (int lag = minPeriod; lag < maxPeriod; ++lag)
     {
         if (autocorr[lag] > maxAutocorr && autocorr[lag] > threshold)
@@ -146,16 +147,47 @@ void AutotuneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     }
 
     float detectedFreq = (maxAutocorr > threshold) ? static_cast<float>(currentSampleRate / period) : 0.0f;
+
+    // Smooth pitch to avoid jumps
+    if (detectedFreq > 0.0f)
+        detectedFreq = 0.9f * previousPitch + 0.1f * detectedFreq; // Basic smoothing
+    previousPitch = detectedFreq;
+
     DBG("Detected Pitch: " << detectedFreq << " Hz");
 
-    // Passthrough audio for now
+    // Pitch correction to nearest semitone
+    float midiNote = (detectedFreq > 0.0f) ? 12.0f * log2f(detectedFreq / 440.0f) + 69.0f : 0.0f;
+    int targetNote = static_cast<int>(roundf(midiNote));
+    float targetFreq = (midiNote > 0.0f) ? 440.0f * powf(2.0f, (targetNote - 69.0f) / 12.0f) : 0.0f;
+    float pitchRatio = (detectedFreq > 0.0f && targetFreq > 0.0f) ? targetFreq / detectedFreq : 1.0f;
+
+    DBG("Target Pitch: " << targetFreq << " Hz, Ratio: " << pitchRatio);
+
+    // Basic pitch shifting (resampling)
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
     {
         auto* channelData = buffer.getWritePointer(channel);
+        auto* outData = outputBuffer.getWritePointer(channel);
         for (int sample = 0; sample < numSamples; ++sample)
         {
-            channelData[sample] = buffer.getSample(channel, sample);
+            float srcPos = sample * pitchRatio;
+            int intPos = static_cast<int>(srcPos);
+            float frac = srcPos - intPos;
+
+            if (intPos + 1 < numSamples)
+            {
+                // Linear interpolation
+                float sampleA = buffer.getSample(channel, intPos);
+                float sampleB = buffer.getSample(channel, intPos + 1);
+                outData[sample] = sampleA + frac * (sampleB - sampleA);
+            }
+            else
+                outData[sample] = buffer.getSample(channel, sample);
         }
+
+        // Copy to output
+        for (int sample = 0; sample < numSamples; ++sample)
+            channelData[sample] = outData[sample];
     }
 }
 

@@ -58,6 +58,8 @@ private:
     static const int bufferSize = 2048;     // Size of buffer for pitch analysis
     float analysisBuffer[bufferSize];       // Buffer to hold audio samples for analysis
     double currentSampleRate;               // Store the sample rate for calculations
+    juce::AudioBuffer<float> outputBuffer;  // Buffer for shifted output
+    float previousPitch;                    // Track pitch for smoothing
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AutotuneAudioProcessor)
 };
