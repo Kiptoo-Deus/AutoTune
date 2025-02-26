@@ -14,12 +14,14 @@ AutotuneAudioProcessor::AutotuneAudioProcessor()
     : AudioProcessor(BusesProperties()
         .withInput("Input", juce::AudioChannelSet::stereo(), true)
         .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-    outputBuffer(2, bufferSize) // Stereo output buffer
+    circularBuffer(2, bufferSize * 2)  // Double bufferSize for safety
 {
     std::fill(analysisBuffer, analysisBuffer + bufferSize, 0.0f);
     currentSampleRate = 0.0;
+    writePosition = 0;
+    readPosition = 0.0f;
     previousPitch = 0.0f;
-    outputBuffer.clear();
+    circularBuffer.clear();
 }
 
 AutotuneAudioProcessor::~AutotuneAudioProcessor()
@@ -79,8 +81,10 @@ void AutotuneAudioProcessor::changeProgramName(int index, const juce::String& ne
 void AutotuneAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
-    outputBuffer.setSize(2, samplesPerBlock); 
-    outputBuffer.clear();
+    circularBuffer.setSize(2, samplesPerBlock * 2); // Ensure enough room
+    circularBuffer.clear();
+    writePosition = 0;
+    readPosition = 0.0f;
 }
 
 void AutotuneAudioProcessor::releaseResources()
@@ -111,6 +115,8 @@ void AutotuneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 
     auto* leftChannelData = buffer.getWritePointer(0);
     int numSamples = buffer.getNumSamples();
+
+    // Pitch detection
     int samplesToCopy = juce::jmin(numSamples, bufferSize);
     for (int i = 0; i < samplesToCopy; ++i)
     {
@@ -120,7 +126,6 @@ void AutotuneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     for (int i = samplesToCopy; i < bufferSize; ++i)
         analysisBuffer[i] = 0.0f;
 
-    // Autocorrelation
     float autocorr[bufferSize] = { 0 };
     const int minPeriod = static_cast<int>(currentSampleRate / 1000.0);
     const int maxPeriod = static_cast<int>(currentSampleRate / 50.0);
@@ -133,7 +138,6 @@ void AutotuneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
         }
     }
 
-    // Find peak
     float maxAutocorr = 0;
     int period = minPeriod;
     float threshold = 0.1f * autocorr[0];
@@ -148,53 +152,60 @@ void AutotuneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 
     float detectedFreq = (maxAutocorr > threshold) ? static_cast<float>(currentSampleRate / period) : 0.0f;
 
-    // Smooth pitch to avoid jumps
+    // Adjust pitch smoothing with retune speed (hardcoded for now)
+    float retuneSpeed = 0.1f; // 0.0 = instant, 1.0 = no correction (will connect to slider later)
     if (detectedFreq > 0.0f)
-        detectedFreq = 0.9f * previousPitch + 0.1f * detectedFreq; // Basic smoothing
+        detectedFreq = (1.0f - retuneSpeed) * previousPitch + retuneSpeed * detectedFreq;
     previousPitch = detectedFreq;
 
-    DBG("Detected Pitch: " << detectedFreq << " Hz");
-
-    // Pitch correction to nearest semitone
+    // Pitch correction to C major scale
     float midiNote = (detectedFreq > 0.0f) ? 12.0f * log2f(detectedFreq / 440.0f) + 69.0f : 0.0f;
-    int targetNote = static_cast<int>(roundf(midiNote));
+    int targetNote = (midiNote > 0.0f) ? snapToCMajor(midiNote) : 0; // Snap to C major instead of chromatic
     float targetFreq = (midiNote > 0.0f) ? 440.0f * powf(2.0f, (targetNote - 69.0f) / 12.0f) : 0.0f;
     float pitchRatio = (detectedFreq > 0.0f && targetFreq > 0.0f) ? targetFreq / detectedFreq : 1.0f;
 
-    DBG("Target Pitch: " << targetFreq << " Hz, Ratio: " << pitchRatio);
+    DBG("Detected: " << detectedFreq << " Hz, Target: " << targetFreq << " Hz, Ratio: " << pitchRatio);
 
-    // Basic pitch shifting (resampling)
+    // Write input to circular buffer
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
     {
-        auto* channelData = buffer.getWritePointer(channel);
-        auto* outData = outputBuffer.getWritePointer(channel);
-        for (int sample = 0; sample < numSamples; ++sample)
+        auto* inData = buffer.getWritePointer(channel);
+        auto* circData = circularBuffer.getWritePointer(channel);
+        for (int i = 0; i < numSamples; ++i)
         {
-            float srcPos = sample * pitchRatio;
-            int intPos = static_cast<int>(srcPos);
-            float frac = srcPos - intPos;
-
-            if (intPos + 1 < numSamples)
-            {
-                // Linear interpolation
-                float sampleA = buffer.getSample(channel, intPos);
-                float sampleB = buffer.getSample(channel, intPos + 1);
-                outData[sample] = sampleA + frac * (sampleB - sampleA);
-            }
-            else
-                outData[sample] = buffer.getSample(channel, sample);
+            int pos = (writePosition + i) % circularBuffer.getNumSamples();
+            circData[pos] = inData[i];
         }
-
-        // Copy to output
-        for (int sample = 0; sample < numSamples; ++sample)
-            channelData[sample] = outData[sample];
     }
+
+    // Read from circular buffer with pitch shift
+    for (int channel = 0; channel < totalNumInputChannels; ++channel)
+    {
+        auto* outData = buffer.getWritePointer(channel);
+        auto* circData = circularBuffer.getReadPointer(channel);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            int intPos = static_cast<int>(readPosition);
+            float frac = readPosition - intPos;
+            int nextPos = (intPos + 1) % circularBuffer.getNumSamples();
+
+            float sampleA = circData[intPos];
+            float sampleB = circData[nextPos];
+            outData[i] = sampleA + frac * (sampleB - sampleA);
+
+            readPosition += pitchRatio;
+            if (readPosition >= circularBuffer.getNumSamples())
+                readPosition -= circularBuffer.getNumSamples();
+        }
+    }
+
+    writePosition = (writePosition + numSamples) % circularBuffer.getNumSamples();
 }
 
 //==============================================================================
 bool AutotuneAudioProcessor::hasEditor() const
 {
-    return true; 
+    return true;
 }
 
 juce::AudioProcessorEditor* AutotuneAudioProcessor::createEditor()
@@ -205,14 +216,13 @@ juce::AudioProcessorEditor* AutotuneAudioProcessor::createEditor()
 //==============================================================================
 void AutotuneAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-    // Add parameter saving later 
+    // Add parameter saving later
 }
 
 void AutotuneAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
-    // Add parameter loading later 
+    // Add parameter loading later
 }
-
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {

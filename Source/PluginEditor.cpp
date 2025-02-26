@@ -9,32 +9,42 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-//==============================================================================
-AutotuneAudioProcessorEditor::AutotuneAudioProcessorEditor (AutotuneAudioProcessor& p)
-    : AudioProcessorEditor (&p), audioProcessor (p)
+AutotuneAudioProcessorEditor::AutotuneAudioProcessorEditor(AutotuneAudioProcessor& p)
+    : AudioProcessorEditor(&p), audioProcessor(p), displayedPitch(0.0f)
 {
-    // Make sure that before the constructor has finished, you've set the
-    // editor's size to whatever you need it to be.
-    setSize (400, 300);
+    startTimer(100); // Update every 100ms
+
+    retuneSpeedSlider.setRange(0.0, 1.0, 0.01);
+    retuneSpeedSlider.setValue(0.1);
+    addAndMakeVisible(retuneSpeedSlider);
+
+    pitchLabel.setText("Pitch: 0 Hz", juce::dontSendNotification);
+    addAndMakeVisible(pitchLabel);
+
+    setSize(400, 300);
 }
 
 AutotuneAudioProcessorEditor::~AutotuneAudioProcessorEditor()
 {
+    stopTimer();
 }
 
-//==============================================================================
-void AutotuneAudioProcessorEditor::paint (juce::Graphics& g)
+void AutotuneAudioProcessorEditor::paint(juce::Graphics& g)
 {
-    // (Our component is opaque, so we must completely fill the background with a solid colour)
-    g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
-
-    g.setColour (juce::Colours::white);
-    g.setFont (15.0f);
-    g.drawFittedText ("Hello World!", getLocalBounds(), juce::Justification::centred, 1);
+    g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
+    g.setColour(juce::Colours::white);
+    g.setFont(15.0f);
+    g.drawText("Autotune", 10, 10, 200, 20, juce::Justification::left);
 }
 
 void AutotuneAudioProcessorEditor::resized()
 {
-    // This is generally where you'll want to lay out the positions of any
-    // subcomponents in your editor..
+    retuneSpeedSlider.setBounds(10, 40, 380, 20);
+    pitchLabel.setBounds(10, 70, 380, 20);
+}
+
+void AutotuneAudioProcessorEditor::timerCallback()
+{
+    displayedPitch = audioProcessor.previousPitch; 
+    pitchLabel.setText("Pitch: " + juce::String(displayedPitch, 1) + " Hz", juce::dontSendNotification);
 }

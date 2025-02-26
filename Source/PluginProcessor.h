@@ -52,14 +52,35 @@ public:
     //==============================================================================
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
-
+    float getPreviousPitch() const { return previousPitch; }
+    float previousPitch;                    // Track pitch for smoothing
+   
 private:
     //==============================================================================
     static const int bufferSize = 2048;     // Size of buffer for pitch analysis
     float analysisBuffer[bufferSize];       // Buffer to hold audio samples for analysis
     double currentSampleRate;               // Store the sample rate for calculations
-    juce::AudioBuffer<float> outputBuffer;  // Buffer for shifted output
-    float previousPitch;                    // Track pitch for smoothing
+    juce::AudioBuffer<float> circularBuffer;// Circular buffer for pitch shifting
+    int writePosition;                      // Current position in circular buffer
+    float readPosition;                     // Fractional read position for shifting
+   
+    bool isInCMajorScale(int note)
+    {
+        int noteInOctave = note % 12;
+        return noteInOctave == 0 || noteInOctave == 2 || noteInOctave == 4 ||
+            noteInOctave == 5 || noteInOctave == 7 || noteInOctave == 9 || noteInOctave == 11; // C D E F G A B
+    }
+
+    int snapToCMajor(float midiNote)
+    {
+        int nearest = static_cast<int>(roundf(midiNote));
+        while (!isInCMajorScale(nearest) && nearest > 0 && nearest < 127)
+        {
+            if (midiNote > nearest) nearest++;
+            else nearest--;
+        }
+        return nearest;
+    }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AutotuneAudioProcessor)
 };
